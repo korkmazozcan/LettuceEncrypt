@@ -21,4 +21,5 @@ namespace LettuceEncrypt
         /// <returns>A collection of certificates</returns>
         Task<IEnumerable<X509Certificate2>> GetAdditionalIssuersAsync(CancellationToken cancellationToken);
     }
-}
+} 
+//
