@@ -1,7 +1,12 @@
-﻿// Copyright (c) Nate McMaster.
+// Copyright (c) Nate McMaster.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 using Certes;
 using Certes.Acme;
 using Certes.Acme.Resource;
@@ -15,8 +20,8 @@ using Microsoft.Extensions.Options;
 using IHostApplicationLifetime = Microsoft.Extensions.Hosting.IApplicationLifetime;
 #endif
 
-namespace LettuceEncrypt.Internal;
-
+namespace LettuceEncrypt.Internal
+{
 internal class AcmeCertificateFactory
 {
     private readonly AcmeClientFactory _acmeClientFactory;
@@ -30,6 +35,7 @@ internal class AcmeCertificateFactory
     private readonly TaskCompletionSource<object?> _appStarted = new();
     private AcmeClient? _client;
     private IKey? _acmeAccountKey;
+    private readonly IEnumerable<IAdditionalIssuersSource> _additionalIssuersSources;
 
     public AcmeCertificateFactory(
         AcmeClientFactory acmeClientFactory,
@@ -38,24 +44,25 @@ internal class AcmeCertificateFactory
         IHttpChallengeResponseStore challengeStore,
         ILogger<AcmeCertificateFactory> logger,
         IHostApplicationLifetime appLifetime,
+        IEnumerable<IAdditionalIssuersSource> additionalIssuersSources,
         TlsAlpnChallengeResponder tlsAlpnChallengeResponder,
         ICertificateAuthorityConfiguration certificateAuthority,
         IAccountStore? accountRepository = null)
     {
-        _acmeClientFactory = acmeClientFactory;
-        _tosChecker = tosChecker;
-        _options = options;
-        _challengeStore = challengeStore;
-        _logger = logger;
-        _appLifetime = appLifetime;
-        _tlsAlpnChallengeResponder = tlsAlpnChallengeResponder;
+            _acmeClientFactory = acmeClientFactory;
+            _tosChecker = tosChecker;
+            _options = options;
+            _challengeStore = challengeStore;
+            _logger = logger;
+            _appLifetime = appLifetime;
+            _tlsAlpnChallengeResponder = tlsAlpnChallengeResponder;
+            appLifetime.ApplicationStarted.Register(() => _appStarted.TrySetResult(null));
+            if (appLifetime.ApplicationStarted.IsCancellationRequested)
+            {
+                _appStarted.TrySetResult(null);
+            }
 
-        appLifetime.ApplicationStarted.Register(() => _appStarted.TrySetResult(null));
-        if (appLifetime.ApplicationStarted.IsCancellationRequested)
-        {
-            _appStarted.TrySetResult(null);
-        }
-
+            _additionalIssuersSources = additionalIssuersSources;
         _accountRepository = accountRepository ?? new FileSystemAccountStore(logger, certificateAuthority);
     }
 
@@ -202,7 +209,7 @@ internal class AcmeCertificateFactory
         CancellationToken cancellationToken)
     {
         foreach (var authorization in authorizations)
-        {
+            {
             yield return ValidateDomainOwnershipAsync(authorization, cancellationToken);
         }
     }
@@ -291,7 +298,16 @@ internal class AcmeCertificateFactory
         _logger.LogAcmeAction("NewCertificate");
 
         var pfxBuilder = acmeCert.ToPfx(privateKey);
+        foreach (var additionalIssuersSource in _additionalIssuersSources)
+            {
+                var additionalIssuers = await additionalIssuersSource.GetAdditionalIssuersAsync(cancellationToken);
+                foreach (var cert in additionalIssuers)
+                {
+                    pfxBuilder.AddIssuer(cert.RawData);
+                }
+            }
         var pfx = pfxBuilder.Build("HTTPS Cert - " + _options.Value.DomainNames, string.Empty);
         return new X509Certificate2(pfx, string.Empty, X509KeyStorageFlags.Exportable);
+        }
     }
 }
